@@ -1,0 +1,18 @@
+plugins {
+  id "java-library"
+}
+
+version = "1.18.2"
+group = "com.github.neapovil.skinrestoreroffline"
+compileJava.options.encoding = "UTF-8"
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+repositories {
+  maven { url "https://papermc.io/repo/repository/maven-public/" }
+  mavenCentral()
+}
+
+dependencies {
+  compileOnly group: "io.papermc.paper", name: "paper-api", version: "1.18.2-R0.1-SNAPSHOT"
+}
