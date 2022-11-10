@@ -1,19 +1,24 @@
 package com.github.neapovil.skinrestoreroffline;
 
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.List;
+import java.util.Queue;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Semaphore;
 
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import com.destroystokyo.paper.event.server.ServerTickStartEvent;
 import com.destroystokyo.paper.profile.PlayerProfile;
 import com.destroystokyo.paper.profile.ProfileProperty;
 import com.google.gson.Gson;
@@ -24,6 +29,8 @@ public class SkinRestorerOffline extends JavaPlugin implements Listener
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();
+    private final Semaphore semaphore = new Semaphore(1);
+    private final Queue<RequestObject> queue = new ConcurrentLinkedQueue<>();
 
     @Override
     public void onEnable()
@@ -53,101 +60,94 @@ public class SkinRestorerOffline extends JavaPlugin implements Listener
     }
 
     @EventHandler
-    private void join(AsyncPlayerPreLoginEvent event)
+    private void serverTickStart(ServerTickStartEvent event)
     {
-        URI uri = null;
-
-        try
-        {
-            uri = new URI("https://api.mojang.com/users/profiles/minecraft/" + event.getName());
-        }
-        catch (URISyntaxException e)
-        {
-        }
-
-        if (uri == null)
+        if (event.getTickNumber() % 20 != 0)
         {
             return;
         }
 
-        final HttpRequest httprequest = HttpRequest.newBuilder(uri).build();
-
-        HttpResponse<String> httpresponse = null;
-
-        try
-        {
-            httpresponse = this.httpClient.send(httprequest, BodyHandlers.ofString());
-        }
-        catch (Exception e)
-        {
-        }
-
-        if (httpresponse == null)
+        if (this.queue.peek() == null)
         {
             return;
         }
 
-        if (httpresponse.statusCode() != 200)
+        if (!this.semaphore.tryAcquire())
         {
             return;
         }
 
-        final Gson gson = new Gson();
+        final RequestObject requestobject = this.queue.poll();
 
-        final UuidResponse uuidresponse = gson.fromJson(httpresponse.body(), UuidResponse.class);
+        final Player player = this.getServer().getPlayer(requestobject.uuid);
 
-        URI uri1 = null;
-
-        try
+        if (player == null)
         {
-            uri1 = new URI("https://sessionserver.mojang.com/session/minecraft/profile/" + uuidresponse.id + "?unsigned=false");
-        }
-        catch (URISyntaxException e)
-        {
-        }
-
-        if (uri1 == null)
-        {
+            this.semaphore.release();
             return;
         }
 
-        final HttpRequest httprequest1 = HttpRequest.newBuilder(uri1).build();
+        this.getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try
+            {
+                URI uri = new URI("https://api.mojang.com/users/profiles/minecraft/" + player.getName());
+                HttpRequest httprequest = HttpRequest.newBuilder(uri).build();
+                HttpResponse<String> httpresponse = this.httpClient.send(httprequest, BodyHandlers.ofString());
 
-        HttpResponse<String> httpresponse1 = null;
+                if (httpresponse.statusCode() != 200)
+                {
+                    return;
+                }
 
-        try
-        {
-            httpresponse1 = this.httpClient.send(httprequest1, BodyHandlers.ofString());
-        }
-        catch (Exception e)
-        {
-        }
+                final Gson gson = new Gson();
+                final UuidResponse uuidresponse = gson.fromJson(httpresponse.body(), UuidResponse.class);
 
-        if (httpresponse1 == null)
-        {
-            return;
-        }
+                uri = new URI("https://sessionserver.mojang.com/session/minecraft/profile/" + uuidresponse.id + "?unsigned=false");
+                httprequest = HttpRequest.newBuilder(uri).build();
+                httpresponse = this.httpClient.send(httprequest, BodyHandlers.ofString());
 
-        if (httpresponse1.statusCode() != 200)
-        {
-            return;
-        }
+                if (httpresponse.statusCode() != 200)
+                {
+                    return;
+                }
 
-        final ProfileResponse profileresponse = gson.fromJson(httpresponse1.body(), ProfileResponse.class);
+                final ProfileResponse profileresponse = gson.fromJson(httpresponse.body(), ProfileResponse.class);
 
-        if (profileresponse.properties.isEmpty())
-        {
-            return;
-        }
+                final ProfileResponse.Property property = profileresponse.properties.stream()
+                        .filter(i -> i.name.equalsIgnoreCase("textures"))
+                        .findAny()
+                        .orElse(null);
 
-        if (!profileresponse.properties.get(0).name.equalsIgnoreCase("textures"))
-        {
-            return;
-        }
+                if (property == null)
+                {
+                    return;
+                }
 
-        final PlayerProfile playerprofile = event.getPlayerProfile();
+                this.getServer().getScheduler().runTask(this, () -> {
+                    final PlayerProfile playerprofile = player.getPlayerProfile();
 
-        playerprofile.setProperty(new ProfileProperty("textures", profileresponse.properties.get(0).value, profileresponse.properties.get(0).signature));
+                    playerprofile.setProperty(new ProfileProperty("textures", property.value, property.signature));
+
+                    if (player.isOnline())
+                    {
+                        player.setPlayerProfile(playerprofile);
+                    }
+                });
+            }
+            catch (Exception e)
+            {
+            }
+            finally
+            {
+                this.semaphore.release();
+            }
+        });
+    }
+
+    @EventHandler
+    private void join(PlayerJoinEvent event)
+    {
+        this.queue.offer(new RequestObject(event.getPlayer().getUniqueId()));
     }
 
     class UuidResponse
@@ -164,6 +164,16 @@ public class SkinRestorerOffline extends JavaPlugin implements Listener
             public String name;
             public String value;
             public String signature;
+        }
+    }
+
+    class RequestObject
+    {
+        public final UUID uuid;
+
+        public RequestObject(UUID uuid)
+        {
+            this.uuid = uuid;
         }
     }
 }
