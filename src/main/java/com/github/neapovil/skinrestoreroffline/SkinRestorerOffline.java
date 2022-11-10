@@ -4,7 +4,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 import java.util.List;
 import java.util.Queue;
@@ -92,7 +91,7 @@ public class SkinRestorerOffline extends JavaPlugin implements Listener
             {
                 URI uri = new URI("https://api.mojang.com/users/profiles/minecraft/" + player.getName());
                 HttpRequest httprequest = HttpRequest.newBuilder(uri).build();
-                HttpResponse<String> httpresponse = this.httpClient.send(httprequest, BodyHandlers.ofString());
+                HttpResponse<String> httpresponse = this.httpClient.send(httprequest, HttpResponse.BodyHandlers.ofString());
 
                 if (httpresponse.statusCode() != 200)
                 {
@@ -104,7 +103,7 @@ public class SkinRestorerOffline extends JavaPlugin implements Listener
 
                 uri = new URI("https://sessionserver.mojang.com/session/minecraft/profile/" + uuidresponse.id + "?unsigned=false");
                 httprequest = HttpRequest.newBuilder(uri).build();
-                httpresponse = this.httpClient.send(httprequest, BodyHandlers.ofString());
+                httpresponse = this.httpClient.send(httprequest, HttpResponse.BodyHandlers.ofString());
 
                 if (httpresponse.statusCode() != 200)
                 {
